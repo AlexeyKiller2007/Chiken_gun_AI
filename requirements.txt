@@ -1,0 +1,10 @@
+numpy
+pandas
+scipy
+mss>=10
+opencv-python
+numba
+cupy-cuda12x
+nvidia-cuda-nvrtc-cu12
+nvidia-cuda-runtime-cu12
+pillow
