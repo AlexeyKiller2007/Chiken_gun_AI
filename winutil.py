@@ -1,4 +1,4 @@
-"""Всё, что связано с Windows: нажатия клавиш, окно BlueStacks, приоритет."""
+"""Всё, что связано с Windows: нажатия клавиш, мышь, окно игры, приоритет."""
 import ctypes
 import os
 import time
@@ -28,11 +28,21 @@ user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 user32.EnumChildWindows.argtypes = [wintypes.HWND, ctypes.c_void_p, wintypes.LPARAM]
 for _name in ("IsWindowVisible", "GetWindowTextLengthW", "IsWindow", "IsIconic"):
     getattr(user32, _name).argtypes = [wintypes.HWND]
+user32.GetAncestor.restype = wintypes.HWND
+user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+user32.GetWindow.restype = wintypes.HWND
+user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+kernel32.GetConsoleWindow.restype = wintypes.HWND
+dwmapi = ctypes.WinDLL("dwmapi")
+dwmapi.DwmGetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
 
 # Скан-коды клавиш: BlueStacks понимает их лучше, чем виртуальные коды
 SCANCODES = {
     "w": 0x11, "a": 0x1E, "s": 0x1F, "d": 0x20, "y": 0x15, "r": 0x13,
     "c": 0x2E, "v": 0x2F, "b": 0x30, "n": 0x31, "x": 0x2D, "z": 0x2C, "tab": 0x0F,
+    "1": 0x02, "2": 0x03, "3": 0x04, "4": 0x05, "5": 0x06,
+    "6": 0x07, "7": 0x08, "8": 0x09, "9": 0x0A, "0": 0x0B,
     "num0": 0x52, "num1": 0x4F, "num2": 0x50, "num3": 0x51, "num4": 0x4B,
     "num5": 0x4C, "num6": 0x4D, "num7": 0x47, "num8": 0x48, "num9": 0x49,
     "q": 0x10, "e": 0x12, "f": 0x21, "g": 0x22, "space": 0x39,
@@ -70,6 +80,9 @@ VIRTUAL_KEYS = {f"num{i}": 0x60 + i for i in range(10)}
 
 
 def send_key(key, down):
+    if key in MOUSE_BUTTONS:
+        mouse_event(0, 0, MOUSE_BUTTONS[key][0 if down else 1])
+        return
     vk = VIRTUAL_KEYS.get(key, 0)
     flags = (0 if vk else KEYEVENTF_SCANCODE) | (0 if down else KEYEVENTF_KEYUP)
     inp = INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(vk, SCANCODES[key], flags, 0, 0))
@@ -81,6 +94,20 @@ MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_VIRTUALDESK = 0x4000
 MOUSEEVENTF_ABSOLUTE = 0x8000
+
+
+# Кнопки мыши можно назначать как обычные «клавиши» в CONTROLS
+MOUSE_BUTTONS = {"lmb": (0x0002, 0x0004), "rmb": (0x0008, 0x0010), "mmb": (0x0020, 0x0040)}
+
+
+def mouse_event(dx, dy, flags):
+    inp = INPUT(type=INPUT_MOUSE, mi=MOUSEINPUT(dx, dy, 0, flags, 0, 0))
+    user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+
+
+def move_mouse(dx, dy):
+    """Сдвинуть мышь на dx, dy (игры в режиме прицела читают именно сдвиги)."""
+    mouse_event(dx, dy, MOUSEEVENTF_MOVE)
 
 
 def send_mouse(ax, ay, flags):
@@ -227,6 +254,28 @@ def find_windows(title_part, process=None):
     return found
 
 
+def app_windows():
+    """Окна программ, как на панели задач: [(hwnd, заголовок, процесс)], сверху — последние активные."""
+    console = kernel32.GetConsoleWindow()
+    skip = {console, user32.GetAncestor(console, 3)} if console else set()   # наша консоль
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def callback(hwnd, _):
+        title = window_title(hwnd)
+        cloaked = wintypes.DWORD(0)
+        dwmapi.DwmGetWindowAttribute(hwnd, 14, ctypes.byref(cloaked), 4)   # DWMWA_CLOAKED
+        if (user32.IsWindowVisible(hwnd) and title and hwnd not in skip and not cloaked.value
+                and not user32.GetWindow(hwnd, 4)                              # не диалог
+                and not user32.GetWindowLongW(hwnd, -20) & 0x80                # не панель
+                and window_pid(hwnd) != os.getpid() and title != "Program Manager"):
+            found.append((hwnd, title, process_name(hwnd)))
+        return True
+
+    user32.EnumWindows(callback, 0)
+    return found
+
+
 def find_child(parent, title):
     """Первое дочернее окно (на любой глубине) с таким заголовком."""
     found = []
@@ -264,16 +313,23 @@ def own_window_rects(titles):
 
 
 class GameWindow:
-    """Окно BlueStacks. Игра рисуется в дочернем окне «HD-Player»; запасные
-    варианты: прозрачное окно «Keymap Overlay» или главное окно минус crop."""
+    """Окно игры.
 
-    def __init__(self, title, process, crop):
-        windows = find_windows(title, process)
-        overlays = [h for h in windows if "overlay" in window_title(h).lower()]
+    BlueStacks: игра рисуется в дочернем окне «HD-Player»; запасные варианты —
+    прозрачное окно «Keymap Overlay» или главное окно минус crop.
+    Десктопное приложение: окно выбрано заранее (hwnd), берём его внутреннюю область."""
+
+    def __init__(self, title, process, crop, hwnd=None):
+        self.single = hwnd is not None
+        if self.single:
+            windows, overlays = [hwnd], []
+        else:
+            windows = find_windows(title, process)
+            overlays = [h for h in windows if "overlay" in window_title(h).lower()]
         mains = [h for h in windows if h not in overlays]
         self.main = mains[0] if mains else None
         self.overlay = overlays[0] if overlays else None
-        self.render = find_child(self.main, "HD-Player") if self.main else None
+        self.render = find_child(self.main, "HD-Player") if self.main and not self.single else None
         self.pid = window_pid(self.main) if self.main else None
         self.crop = crop
 
@@ -288,7 +344,11 @@ class GameWindow:
 
     def focused(self):
         fg = user32.GetForegroundWindow()
-        return bool(fg) and window_pid(fg) == self.pid
+        if not fg:
+            return False
+        if self.single:   # у приложения бывает много окон — клавиши только в выбранное
+            return user32.GetAncestor(fg, 2) == self.main
+        return window_pid(fg) == self.pid
 
     def game_box(self):
         """Область с картинкой игры для mss."""

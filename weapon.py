@@ -71,6 +71,9 @@ class WeaponPicker:
         best = max(self.scores, key=self.scores.get)
         if (can_act and now >= self.next_allowed and best != self.current
                 and self.scores[best] >= config.WEAPON_Z):
-            tap(config.WEAPON_MENU_KEY)
-            self.pending = (best, now + config.WEAPON_MENU_DELAY_S)
+            if config.WEAPON_MENU_KEY:
+                tap(config.WEAPON_MENU_KEY)
+                self.pending = (best, now + config.WEAPON_MENU_DELAY_S)
+            else:
+                self.pending = (best, now)   # меню нет — жмём цифру сразу
             self.next_allowed = now + config.WEAPON_EVERY_S

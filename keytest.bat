@@ -1,5 +1,5 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-.venv\Scripts\python keytest.py
+.venv\Scripts\python keytest.py %*
 pause

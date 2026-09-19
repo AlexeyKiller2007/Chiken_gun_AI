@@ -1,6 +1,9 @@
-"""Проверка клавиш без мухи: курица шагает вправо-влево и оглядывается.
+"""Проверка клавиш без мухи: персонаж шагает вправо-влево и оглядывается.
 
 Запусти keytest.bat и кликни в окно игры.
+    keytest.bat                      # спросит, во что играем
+    keytest.bat bluestacks
+    keytest.bat desktop "Roblox"     # окно, в заголовке которого есть «Roblox»
 """
 import time
 
@@ -9,10 +12,16 @@ import winutil
 
 
 def main():
+    import sys
+    import profiles
     winutil.make_dpi_aware()
-    window = winutil.GameWindow(config.WINDOW_TITLE, config.WINDOW_PROCESS, config.CROP)
+    game = profiles.setup(sys.argv[1] if len(sys.argv) > 1 else None,
+                          sys.argv[2] if len(sys.argv) > 2 else None, sys.stdin.isatty())
+    if game is None:
+        return
+    window = profiles.open_window()
     if not window.found():
-        print(f"Не нашёл окно «{config.WINDOW_TITLE}». Запусти BlueStacks и попробуй снова.")
+        print(f"Не нашёл окно «{config.WINDOW_TITLE}». {config.WINDOW_MISSING}")
         return
 
     print("Кликни в окно игры (жду 15 секунд)...")
@@ -24,21 +33,17 @@ def main():
         time.sleep(0.1)
     time.sleep(0.5)
 
-    for key, where in (("d", "шагает вправо"), ("a", "шагает влево"),
-                       ("n", "смотрит вправо"), ("v", "смотрит влево"),
-                       ("w", "идёт вперёд"), ("s", "идёт назад"),
-                       ("space", "прыгает"), ("x", "открывает меню"), ("x", "закрывает меню"),
-                       ("z", "включает вторую камеру"), ("z", "возвращает камеру"),
-                       ("tab", "открывает меню оружия"), ("num3", "берёт автомат")):
+    for key, where in config.KEYTEST_SEQUENCE:
         if not window.focused():
             print("Окно игры больше не активно, останавливаюсь.")
             return
-        print(f"Жму {key.upper()}: курица {where}")
+        print(f"Жму {key.upper()}: {config.KEYTEST_HERO} {where}")
         winutil.send_key(key, True)
         time.sleep(0.15 if key in config.TAP_KEYS else 0.7)
         winutil.send_key(key, False)
         time.sleep(0.8)
-    print("Готово. Если курица стояла, проверь, что W A S D работают с обычной клавиатуры.")
+    print(f"Готово. Если {config.KEYTEST_HERO} стоял(а), проверь, что W A S D работают "
+          f"с обычной клавиатуры.")
 
 
 if __name__ == "__main__":

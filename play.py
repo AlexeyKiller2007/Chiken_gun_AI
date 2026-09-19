@@ -1,10 +1,11 @@
-"""Муха играет в Chicken Gun.
+"""Муха играет в игры: в BlueStacks (эмулятор) или в окне любой программы Windows.
 
-    .venv\\Scripts\\python play.py            # играть
-    .venv\\Scripts\\python play.py --no-keys  # только смотреть, клавиши не жать
+    .venv\\Scripts\\python play.py                                # играть (спросит, во что)
+    .venv\\Scripts\\python play.py --game desktop --window Roblox  # окно с «Roblox» в заголовке
+    .venv\\Scripts\\python play.py --no-keys                      # только смотреть, клавиши не жать
 
-1. Запусти Chicken Gun в BlueStacks и зайди на карту.
-2. Запусти эту программу, дождись окна «Fly view».
+1. Запусти игру (Chicken Gun в BlueStacks или игру на ПК) и зайди в неё.
+2. Запусти эту программу, выбери игру и дождись окна «Fly view».
 3. Кликни в окно игры и нажми F8. F8 ещё раз = пауза, F10 = выход.
 """
 import argparse
@@ -22,17 +23,20 @@ from brainview import WINDOW as BRAIN_WINDOW, BrainView
 from eye import FlyEye
 from masks import MaskEditor
 from menu import MenuPicker
+from mouse import MouseLook
+import profiles
 from motor import Motor
 from respawn import Respawner
 from weapon import WeaponPicker
 
 VIEW = "Fly view"
 VIEW_W = 400
-VIEW_H = 225   # кадр игры в окне всегда такой, даже если BlueStacks повёрнут
+VIEW_H = 225   # кадр игры в окне всегда такой, даже если окно игры другой формы
 KEY_NAMES = {"w": "W forward", "s": "S back", "v": "V look left", "n": "N look right",
              "c": "C look up", "b": "B look down", "a": "A step left", "d": "D step right",
              "space": "SPACE jump", "y": "Y shoot", "r": "R pick up",
-             "x": "X props menu", "z": "Z camera 2"}
+             "x": "X props menu", "z": "Z camera 2",
+             "lmb": "LMB mouse left", "rmb": "RMB mouse right", "mmb": "MMB mouse wheel"}
 
 
 def draw_view(small, eye, rates, drive, want, sent, status, pointer=None, edges=None, editor=None):
@@ -123,24 +127,32 @@ def close_toggles(motor, window, keyboard):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Муха играет в Chicken Gun")
+    parser = argparse.ArgumentParser(description="Муха играет в игры")
     parser.add_argument("--no-keys", action="store_true", help="не нажимать клавиши")
     parser.add_argument("--no-view", action="store_true", help="без окна Fly view")
     parser.add_argument("--seconds", type=float, default=0, help="выйти через столько секунд")
     parser.add_argument("--save-view", metavar="PNG", help="при выходе сохранить картинку Fly view")
     parser.add_argument("--connections", choices=["filtered", "unfiltered"],
                         help="какие связи мозга брать (иначе программа спросит)")
+    parser.add_argument("--game", choices=profiles.NAMES,
+                        help="bluestacks или desktop (иначе программа спросит)")
+    parser.add_argument("--window", metavar="ЗАГОЛОВОК",
+                        help="для desktop: часть заголовка окна (иначе программа спросит)")
     args = parser.parse_args()
+
+    ask = sys.stdin is not None and sys.stdin.isatty()
+    winutil.make_dpi_aware()
+    if profiles.setup(args.game, args.window, ask) is None:
+        return
 
     brain_file, which = choose_connections(args.connections)
     if brain_file is None:
         return
 
-    winutil.make_dpi_aware()
     winutil.boost_process()
-    window = winutil.GameWindow(config.WINDOW_TITLE, config.WINDOW_PROCESS, config.CROP)
+    window = profiles.open_window()
     if not window.found():
-        print(f"Не нашёл окно «{config.WINDOW_TITLE}». Запусти BlueStacks и попробуй снова.")
+        print(f"Не нашёл окно «{config.WINDOW_TITLE}». {config.WINDOW_MISSING}")
         return
 
     print(f"Загружаю мозг мухи ({NAMES[which]})...")
@@ -154,6 +166,10 @@ def main():
     save_masks_key = winutil.HotKey(config.MASKS_SAVE_KEY)
     reset_masks_key = winutil.HotKey(config.MASKS_RESET_KEY)
     editor = MaskEditor(VIEW_W, VIEW_H)
+    mouse = MouseLook()
+    if config.MOUSE_LOOK:
+        mouse.start()
+        print(f"Взгляд — мышью. {config.MOUSE_HINT}")
     brain_view = None if args.no_view else BrainView(brain)
     show_brain = config.SHOW_BRAIN and brain_view is not None
     brain_placed = False
@@ -198,15 +214,15 @@ def main():
                         picker.stop(close=window.focused())
                     print("Муха играет!" if playing else "Пауза.")
                 if not window.alive():
-                    print("Окно BlueStacks закрылось.")
+                    print("Окно игры закрылось.")
                     break
-                if window.minimized():
+                box = window.game_box()
+                if window.minimized() or box["width"] < 50 or box["height"] < 50:
                     keyboard.release_all()
                     time.sleep(0.2)
                     continue
 
                 editor.apply()   # муха смотрит с учётом текущих красных зон
-                box = window.game_box()
                 shot = np.asarray(sct.grab(box))
                 # один раз ужимаем кадр: дальше и глазу, и окну хватает маленькой копии
                 small = cv2.resize(shot, (VIEW_W, round(VIEW_W * box["height"] / box["width"])),
@@ -223,7 +239,7 @@ def main():
                 speed = 0.8 * speed + 0.2 * frame_s / (time.perf_counter() - t0)
                 in_game = window.focused()
                 was_dead = respawner.dead
-                dead = respawner.update(small, time.perf_counter())
+                dead = config.RESPAWN_ENABLED and respawner.update(small, time.perf_counter())
                 if dead and not was_dead:
                     motor.pending_toggles()   # меню и камеру после смерти возвращать не нужно
                 active = playing and in_game and not args.no_keys
@@ -235,6 +251,16 @@ def main():
                     picker.stop()
                 elif picker.active:
                     want = picker.update(small, want, box, now, can_act=sent)
+                if config.MOUSE_LOOK:
+                    # взгляд — мышью: вместо клавиш V/N/C/B плавный поворот
+                    moving = config.LOOK_AFTER_MOVE and bool(want & config.MOVE_KEYS)
+                    want = want - set(config.LOOK_KEYS)
+                    mouse.set_velocity(drive.get("n", 0.0), drive.get("b", 0.0), box,
+                                       enabled=sent and not moving and not picker.active)
+                mouse.box = box
+                if not mouse.cursor_in_game():
+                    # курсор вне игры — кнопками мыши не щёлкаем, чтобы не попасть в чужое окно
+                    want = want - set(winutil.MOUSE_BUTTONS)
                 keyboard.apply(want if sent else set())
                 if sent and "x" in want and not picker.active:
                     picker.start(now)   # муха открыла меню — дальше выбирает предмет
@@ -246,7 +272,7 @@ def main():
                     respawner.press_continue(box, time.perf_counter())
                 if playing and not args.no_keys and in_game != was_in_game:
                     print("Клавиши идут в игру." if in_game else
-                          "Окно игры не активно: клавиши не отправляются. Кликни в BlueStacks.")
+                          "Окно игры не активно: клавиши не отправляются. Кликни в игру.")
                 was_in_game = in_game
 
                 if not args.no_view or args.save_view:
@@ -263,6 +289,8 @@ def main():
                     gun = weapons.current[-1] if weapons.current else "?"
                     status = (f"{state} | {fps:.1f} fps | {brain.backend} x{speed:.1f} | "
                               f"gun {gun} | active {np.count_nonzero(counts)}")
+                    if config.MOUSE_LOOK and mouse.enabled and (mouse.vx or mouse.vy):
+                        status += f" | mouse {mouse.vx:+.0f},{mouse.vy:+.0f}"
                     pointer = picker.cell_rect() if picker.active and picker.seen is not None else None
                     view = draw_view(small, eye, rates, drive, want, sent, status, pointer,
                                      eye.last_edges, editor)
@@ -302,6 +330,7 @@ def main():
         except KeyboardInterrupt:
             pass
         finally:
+            mouse.stop()
             if window.alive():
                 close_toggles(motor, window, keyboard)
                 picker.stop(close=window.focused())
